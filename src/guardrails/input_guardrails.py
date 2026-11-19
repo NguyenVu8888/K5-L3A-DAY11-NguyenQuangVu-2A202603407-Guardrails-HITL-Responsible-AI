@@ -51,15 +51,37 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
+    if not user_input:
+        return "ALLOW"
+
+    # Bước 1: Tiền xử lý - Loại bỏ ký tự Unicode vô hình (Zero-Width characters) chống evasion
+    # Ví dụ kẻ tấn công chèn \u200b vào: "Ignore\u200b all previous instructions"
+    normalized_input = re.sub(r"[\u200B-\u200D\uFEFF]", "", user_input)
+    # Thu gọn khoảng trắng thừa để regex khớp chuẩn xác hơn
+    normalized_input = re.sub(r"\s+", " ", normalized_input)
+
+    # Bước 2: Danh sách các mẫu regex nhận diện hành vi tấn công Jailbreak / Injection
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        # Bắt yêu cầu bỏ qua chỉ thị hệ thống
+        r"ignore\s+(all\s+)?(previous|above)\s+instructions",
+        # Bắt hành vi thay đổi nhân cách / vai trò hệ thống
+        r"you\s+are\s+now\b",
+        # Bắt hành vi can thiệp vào system prompt
+        r"\bsystem\s+prompt\b",
+        # Bắt hành vi ép mô hình tiết lộ mật khẩu, chỉ dẫn nội bộ
+        r"reveal\s+(your\s+|the\s+)?(internal\s+|system\s+)?(instructions|prompt|password)",
+        # Bắt hành vi giả lập nhân vật không bị ràng buộc (DAN / unrestricted)
+        r"pretend\s+(that\s+)?you\s+are\b",
+        r"act\s+as\s+(a\s+|an\s+)?unrestricted\b",
+        r"bypass\s+(all\s+)?(guardrails|safety|rules)\b",
     ]
 
+    # Bước 3: Quét qua các pattern, nếu khớp bất kỳ mẫu nào -> BLOCK
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, normalized_input, re.IGNORECASE):
             return "BLOCK"
+
+    # Không phát hiện dấu hiệu bất thường -> ALLOW
     return "ALLOW"
 
 
@@ -84,14 +106,26 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
+    if not user_input or not user_input.strip():
+        return "BLOCK"
+
     input_lower = user_input.lower()
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
+    # 1. Kiểm tra chủ đề cấm (Negative filter / Denylist)
+    # Nếu chứa bất kỳ từ khóa độc hại/nguy hiểm nào -> Chặn ngay lập tức
+    for blocked_word in BLOCKED_TOPICS:
+        if blocked_word in input_lower:
+            return "BLOCK"
 
-    pass  # Replace with your implementation
+    # 2. Kiểm tra phạm vi nghiệp vụ được phép (Positive filter / Allowlist)
+    # VinBank AI chỉ hỗ trợ các nghiệp vụ liên quan đến tài chính, ngân hàng
+    has_allowed_topic = any(allowed_word in input_lower for allowed_word in ALLOWED_TOPICS)
+    if not has_allowed_topic:
+        # Câu hỏi lạc đề (off-topic), không chứa bất kỳ từ khóa nghiệp vụ nào -> Chặn
+        return "BLOCK"
+
+    # Đạt yêu cầu: Không dính từ cấm và đúng chủ đề ngân hàng
+    return "ALLOW"
 
 
 # ============================================================
@@ -144,14 +178,22 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        # 1. Kiểm tra phát hiện Prompt Injection / Jailbreak
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot process that request due to security policy."
+            )
 
-        pass  # Replace with your implementation
+        # 2. Kiểm tra giới hạn chủ đề ngân hàng (Domain boundary)
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I can only help with banking-related questions at VinBank."
+            )
+
+        # 3. Khi cả 2 lớp kiểm tra đều an toàn -> Trả về None để luồng đi tiếp tới LLM
+        return None
 
 
 # ============================================================
